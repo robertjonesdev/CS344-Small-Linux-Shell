@@ -14,14 +14,15 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <signal.h>
+#include <fcntl.h>
 
-
-char **parse_buffer(char *);
-int proc_cd(char **);
-int proc_status(char **);
-int proc_exit(char **);
-int proc_exec(char **);
-void catchSIGINT(int );
+char**	parse_buffer(char *, int *);
+int 	proc_cd(char **);
+int 	proc_status(int);
+int 	proc_exit(char **);
+int 	proc_exec_foreground(char **);
+int 	proc_exec_background(char **, long *);
+void 	catchSIGINT(int );
 
 int main ()
 {
@@ -37,9 +38,11 @@ int main ()
 	memset(buffer, '\0', sizeof(buffer));
 
 	char **args;
-	int status = 0;
-
-	do /*while status != 0 */
+	long background_pids[100] = { (long)NULL };
+	int shell_status = 0;
+	int exit_status = 0;
+	
+	do /*while status != -1 */
 	{
 		while (1) 
 		{
@@ -65,43 +68,50 @@ int main ()
 		{ 
 			/* empty line or comment lie, do nothing but keep status 1 */
 			/* shell will clear buffer and re-prompt for input */
-			status = 1;
+			shell_status = 1;
 		}
 		else 
 		{
 			/* otherwise, parse the input buffer, look for built in commands
 			 * if no built-ins are found, exec the arguments */
-
-			args = parse_buffer(buffer);
-			
+			int argc = 0;
+			args = parse_buffer(buffer, &argc);
 			if (strcmp(args[0], "exit") == 0) 
 			{
-				status = proc_exit(args);
+				shell_status = proc_exit(args);
 			} 
 			else if (strcmp(args[0], "cd") == 0) 
 			{
-				status = proc_cd(args);
+				shell_status = proc_cd(args);
 			} 
 			else if (strcmp(args[0], "status") == 0) 
 			{
-				status = proc_status(args);
+				shell_status = proc_status(exit_status);
 			} 
 			else 
 			{
-				status = proc_exec(args);				
-//				status = 1;
+				if (*args[argc] == '&') 
+				{
+					args[argc] = NULL;
+					argc--;
+					shell_status = proc_exec_background(args, background_pids);
+				}
+				else 
+				{
+					exit_status = proc_exec_foreground(args);	
+				}
 			}
 			free(args);
 		}
 		memset(buffer,'\0',sizeof(buffer));
 	
-	} while(status != 0);
+	} while(shell_status != -1);
 
 	free(buffer);
 	return 0;
 }
 
-char **parse_buffer(char *input_buffer)
+char **parse_buffer(char *input_buffer, int *argc)
 {
 	/* find $$ and replace with PID */
 	char tmp_buffer[2069];
@@ -135,6 +145,7 @@ char **parse_buffer(char *input_buffer)
 		token = strtok(NULL," ");
 	}
 	tokens[i] = NULL;
+	*argc = i - 1;
 	return tokens;
 }
 
@@ -156,9 +167,10 @@ int proc_cd(char **args)
 	return 1;
 }
 
-int proc_status(char **args)
+int proc_status(int exit_status)
 {
-
+	printf("exit status %d\n", exit_status);
+	fflush(stdout);
 	return 1;
 }
 
@@ -166,24 +178,21 @@ int proc_exit(char **args)
 {
 	/* REQ: Kill any other processes running */
 
-	return 0;
+	return -1;
 }
 
-int proc_exec(char **args)
+int proc_exec_foreground(char **args)
 {
+	/* first parse the argument array for input file, output file 
+	 * or a background process flag. If any are found, remove them from
+	 * the argument array by assigning NULL */
+	int i = 0, redirect_in = 0, redirect_out = 0;
 	
-	int j =0;
-	while (args[j] != NULL)
-	{
-		printf("%s\n", args[j]);
-		j++;
-	}
-	/* get redirection */
-	int i = 0;
 	char input_file[100]; /* < */
 	memset(input_file, '\0', 100);
 	char output_file[100]; /* > */
 	memset(output_file, '\0', 100);
+	
 	while (args[i] != NULL && i < 512)
 	{
 		if (*args[i] =='>')
@@ -191,6 +200,7 @@ int proc_exec(char **args)
 			if (args[i+1] != NULL)
 			{
 				strcpy(output_file, args[i+1]);
+				redirect_out = 1;
 				args[i] = NULL;
 				args[i+1] = NULL;
 				i++;
@@ -200,6 +210,7 @@ int proc_exec(char **args)
 			if (args[i+1] != NULL)
 			{
 				strcpy(input_file, args[i+1]);
+				redirect_in = 1;
 				args[i] = NULL;
 				args[i+1] = NULL;
 				i++;
@@ -208,7 +219,25 @@ int proc_exec(char **args)
 		i++;
 	}
 
-	printf("%s \t %s\n", input_file, output_file);	
+	int sourceFD, targetFD;
+	if (redirect_in == 1)
+	{
+		sourceFD = open(input_file, O_RDONLY);
+		if (sourceFD == -1) { perror("smallsh: source open()"); exit(1); }
+		int result = dup2(sourceFD, 0);
+		if (result == -1) { perror("smallsh: source: dup2()"); exit(1); }
+		fcntl(sourceFD, F_SETFD, FD_CLOEXEC);
+	}
+	if (redirect_out == 1)
+	{
+		targetFD = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (targetFD == -1) { perror("smallsh: target open()"); exit(1); }
+		int result = dup2(targetFD, 1);
+		if (result == -1) { perror("smallsh: target: dup2()"); exit(1); }
+		fcntl(targetFD, F_SETFD, FD_CLOEXEC);
+	}
+	
+
 	pid_t spawnPid = -5;
 	pid_t waitPid = -5;
 	int childExitStatus = -5;
@@ -238,6 +267,14 @@ int proc_exec(char **args)
 
 	return 1;
 }
+
+
+int proc_exec_background(char **args, long *background_pids)
+{
+
+	return 1;
+}
+
 
 void catchSIGINT( int signo )
 {
