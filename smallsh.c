@@ -26,11 +26,14 @@ void 	catchSIGINT(int );
 
 int main ()
 {
+/*
 	struct sigaction SIGINT_action = {0};
 	SIGINT_action.sa_handler = catchSIGINT;
+	SIGINT_action.sa_flags = SA_RESTART;
 	sigfillset(&SIGINT_action.sa_mask);
 	sigaction(SIGINT, &SIGINT_action, NULL);
-
+*/
+	signal(SIGINT, SIG_IGN);
 	char *buffer;
 	size_t bufsize = 2069;
 	size_t characters;
@@ -219,28 +222,11 @@ int proc_exec_foreground(char **args)
 		i++;
 	}
 
-	int sourceFD, targetFD;
-	if (redirect_in == 1)
-	{
-		sourceFD = open(input_file, O_RDONLY);
-		if (sourceFD == -1) { perror("smallsh: source open()"); exit(1); }
-		int result = dup2(sourceFD, 0);
-		if (result == -1) { perror("smallsh: source: dup2()"); exit(1); }
-		fcntl(sourceFD, F_SETFD, FD_CLOEXEC);
-	}
-	if (redirect_out == 1)
-	{
-		targetFD = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-		if (targetFD == -1) { perror("smallsh: target open()"); exit(1); }
-		int result = dup2(targetFD, 1);
-		if (result == -1) { perror("smallsh: target: dup2()"); exit(1); }
-		fcntl(targetFD, F_SETFD, FD_CLOEXEC);
-	}
-	
 
 	pid_t spawnPid = -5;
 	pid_t waitPid = -5;
 	int childExitStatus = -5;
+	int sourceFD, targetFD;
 
 	spawnPid = fork();
 	switch (spawnPid)
@@ -252,6 +238,23 @@ int proc_exec_foreground(char **args)
 			break;
 		case 0:
 			/* child */
+			signal(SIGINT, SIG_DFL);
+			if (redirect_in == 1)
+			{
+				sourceFD = open(input_file, O_RDONLY);
+				if (sourceFD == -1) { perror("smallsh: source open()"); exit(1); }
+				int result = dup2(sourceFD, 0);
+				if (result == -1) { perror("smallsh: source: dup2()"); exit(1); }
+				fcntl(sourceFD, F_SETFD, FD_CLOEXEC);
+			}
+			if (redirect_out == 1)
+			{
+				targetFD = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+				if (targetFD == -1) { perror("smallsh: target open()"); exit(1); }
+				int result = dup2(targetFD, 1);
+				if (result == -1) { perror("smallsh: target: dup2()"); exit(1); }
+				fcntl(targetFD, F_SETFD, FD_CLOEXEC);
+			}
 			if (execvp(args[0], args) == -1) {
 				perror("smallsh");
 			}
@@ -259,12 +262,18 @@ int proc_exec_foreground(char **args)
 			break;
 		default:
 			/* parent */
-			do {
-			waitPid = waitpid(spawnPid, &childExitStatus, 0);
-			} while(!WIFEXITED(childExitStatus) && !WIFSIGNALED(childExitStatus));
+			waitPid = waitpid(spawnPid, &childExitStatus, WUNTRACED);
+			if (WIFEXITED(childExitStatus))
+			{
+				return WEXITSTATUS(childExitStatus);
+			}
+			else if (WIFSIGNALED(childExitStatus))
+			{
+				printf("terminated by signal %d\n", WTERMSIG(childExitStatus));
+				return WTERMSIG(childExitStatus);
+			}
 			break;
 	}
-
 	return 1;
 }
 
