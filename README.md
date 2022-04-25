@@ -2,7 +2,7 @@
 
 ```
 make [enter]
-./main
+./smallsh
 ```
 
 ### How To Test Program
