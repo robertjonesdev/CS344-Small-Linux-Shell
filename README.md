@@ -1,7 +1,7 @@
 ### Live Demo
 https://replit.com/@robertjonesdev1/smallsh#main.c
 
-### Howt To Compile
+### How To Compile
 
 ```
 make [enter]
